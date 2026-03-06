@@ -1,36 +1,322 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# Next.js JWT Authentication (Cookie Based)
 
-## Getting Started
+This project demonstrates **JWT Authentication in Next.js** using:
 
-First, run the development server:
+* **App Router API routes**
+* **JWT tokens**
+* **HTTP-only cookies**
+* **Middleware route protection**
+* **MySQL database**
+* **bcrypt password hashing**
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+---
+
+# Features
+
+* User Login API
+* JWT Token Generation
+* HTTP-only Secure Cookies
+* Middleware Route Protection
+* Redirect unauthorized users
+* Auto redirect logged-in users
+* Password hashing using bcrypt
+
+---
+
+# Project Structure
+
+```
+project-root
+│
+├── app
+│   ├── api
+│   │   └── login
+│   │       └── route.js
+│
+├── lib
+│   ├── auth.js
+│   └── db.js
+│
+├── middleware.js
+│
+└── README.md
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+# Installation
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Install required dependencies:
 
-## Learn More
+```bash
+npm install jsonwebtoken bcrypt mysql2
+```
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# JWT Authentication Logic
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Authentication works in **3 steps**:
 
-## Deploy on Vercel
+1. User logs in with email & password
+2. Server generates a **JWT token**
+3. Token is stored in **HTTP-only cookie**
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Middleware verifies the token on protected routes.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+# 1. JWT Utility (`lib/auth.js`)
+
+Handles **token creation and verification**.
+
+```javascript
+import jwt from "jsonwebtoken";
+
+const secret = "ffdfdfdfdgdgdgdydydy";
+
+export function setUser(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+    },
+    secret,
+    { expiresIn: "7d" }
+  );
+}
+
+export function getUser(token) {
+  if (!token) return null;
+
+  try {
+    return jwt.verify(token, secret);
+  } catch {
+    return null;
+  }
+}
+```
+
+---
+
+# 2. Login API (`app/api/login/route.js`)
+
+Handles user login and sets JWT cookie.
+
+```javascript
+import { NextResponse } from "next/server";
+import { db } from "@/lib/db.js";
+import bcrypt from "bcrypt";
+import { setUser } from "@/lib/auth";
+
+export async function POST(request) {
+  try {
+    const body = await request.json();
+    const { email, password } = body;
+
+    if (!email || !password) {
+      return NextResponse.json(
+        { error: "All fields are required" },
+        { status: 400 }
+      );
+    }
+
+    const [users] = await db.query(
+      "SELECT id, name, email, password FROM users WHERE email = ?",
+      [email]
+    );
+
+    if (users.length === 0) {
+      return NextResponse.json(
+        { error: "User does not exist" },
+        { status: 400 }
+      );
+    }
+
+    const user = users[0];
+
+    const isValidPassword = await bcrypt.compare(password, user.password);
+
+    if (!isValidPassword) {
+      return NextResponse.json(
+        { error: "Incorrect password" },
+        { status: 400 }
+      );
+    }
+
+    const token = setUser({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+    });
+
+    const response = NextResponse.json(
+      {
+        success: true,
+        message: "User logged in successfully",
+        userId: user.id,
+      },
+      { status: 200 }
+    );
+
+    response.cookies.set("token", token, {
+      httpOnly: true,
+      secure: false,
+      sameSite: "strict",
+      path: "/",
+      maxAge: 60 * 60 * 24,
+    });
+
+    return response;
+  } catch (error) {
+    console.error(error);
+
+    return NextResponse.json(
+      { error: "Server error" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+---
+
+# 3. Middleware Authentication (`middleware.js`)
+
+Middleware protects routes and redirects users.
+
+```javascript
+import { NextResponse } from "next/server";
+import { getUser } from "@/lib/auth";
+
+export function proxy(request) {
+  const token = request.cookies.get("token")?.value;
+  const path = request.nextUrl.pathname;
+
+  const isPublic =
+    path === "/login" ||
+    path === "/register";
+
+  if (!token && !isPublic) {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+
+  if (token) {
+    const user = getUser(token);
+
+    if (!user) {
+      const response = NextResponse.redirect(
+        new URL("/login", request.url)
+      );
+
+      response.cookies.delete("token");
+      return response;
+    }
+
+    if (isPublic) {
+      return NextResponse.redirect(new URL("/home", request.url));
+    }
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    "/((?!api|_next/static|_next/image|favicon.ico).*)",
+  ],
+};
+```
+
+---
+
+# Middleware Behavior
+
+| Scenario                        | Result                                |
+| ------------------------------- | ------------------------------------- |
+| Not logged in → protected page  | Redirect to `/login`                  |
+| Logged in → login/register page | Redirect to `/home`                   |
+| Invalid token                   | Cookie deleted + redirect to `/login` |
+| Valid token                     | Allow access                          |
+
+---
+
+# Database Example
+
+Example **users table**:
+
+```sql
+CREATE TABLE users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255),
+  email VARCHAR(255) UNIQUE,
+  password VARCHAR(255)
+);
+```
+
+---
+
+# Security Notes
+
+For production use:
+
+```javascript
+secure: true
+```
+
+Also move the JWT secret to **environment variables**.
+
+Example:
+
+```
+JWT_SECRET=your_secret_key
+```
+
+Then update:
+
+```javascript
+const secret = process.env.JWT_SECRET;
+```
+
+---
+
+# API Test Example
+
+Login request:
+
+```json
+POST /api/login
+
+{
+  "email": "user@example.com",
+  "password": "123456"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "User logged in successfully",
+  "userId": 1
+}
+```
+
+---
+
+# Future Improvements
+
+* Register API
+* Logout API
+* Refresh Tokens
+* Role-based authorization
+* Protected API routes
+* OAuth login
+
+---
+
+# Author
+
+Next.js Authentication Example using **JWT + Cookies + Middleware**
